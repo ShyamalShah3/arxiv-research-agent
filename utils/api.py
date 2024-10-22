@@ -4,7 +4,6 @@ import xml.etree.ElementTree as ET
 from typing import Dict, Union, List
 import cohere
 from dotenv import load_dotenv
-from urllib.parse import quote
 import google.generativeai as gemini
 from typing_extensions import TypedDict
 import json
