@@ -49,17 +49,17 @@ class ArxivApiResponse(ArxivApiQueryResponse):
 class ArxivApi:
 
     def __init__(self) -> None:
-        self.base_url = "http://export.arxiv.org/api"
-        self.session = requests.Session()
-        self.namespaces = {
+        self.__base_url = "http://export.arxiv.org/api"
+        self.__session = requests.Session()
+        self.__namespaces = {
             'atom': 'http://www.w3.org/2005/Atom',
             'arxiv': 'http://arxiv.org/schemas/atom'
         }
         gemini.configure(api_key=os.environ['GEMINI_API_KEY'])
-        self.gemini_model = gemini.GenerativeModel('gemini-1.5-flash')
-        self.cohere = cohere.Client(os.getenv('COHERE_API_KEY'))
+        self.__gemini_model = gemini.GenerativeModel('gemini-1.5-flash')
+        self.__cohere = cohere.Client(os.getenv('COHERE_API_KEY'))
     
-    def _parse_search_query_response(self, response: str) -> SearchQueryGenerationResponse:
+    def __parse_search_query_response(self, response: str) -> SearchQueryGenerationResponse:
         try:
             response_dict = json.loads(response)
 
@@ -73,7 +73,7 @@ class ArxivApi:
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(f"Invalid JSON string: {str(e)}", e.doc, e.pos)
     
-    def _get_search_query(self, query: str) -> str:
+    def __get_search_query(self, query: str) -> str:
         prompt = f"""
         You are tasked with generating an optimized search query for the arXiv API based on an input query. Your goal is to create a search query that adheres to the API specifications and is optimized for search engines, particularly focusing on relevant keywords.
 
@@ -160,13 +160,13 @@ class ArxivApi:
         A brief explanation of your query construction and optimization choices
         </explanation>
         """
-        response = self.gemini_model.generate_content(prompt, generation_config=gemini.GenerationConfig(
+        response = self.__gemini_model.generate_content(prompt, generation_config=gemini.GenerationConfig(
             response_mime_type='application/json',
             response_schema=SearchQueryGenerationResponse
         ))
-        return self._parse_search_query_response(response.text)['search_query']
+        return self.__parse_search_query_response(response.text)['search_query']
     
-    def _get_query_url(self, search_query: str, start: int = 0, max_results: int = 10) -> str:
+    def __get_query_url(self, search_query: str, start: int = 0, max_results: int = 10) -> str:
         if not search_query:
             raise ValueError("Error: Empty search_query")
         
@@ -176,32 +176,32 @@ class ArxivApi:
         params.append(f"max_results={max_results}")
         
         query_string = "&".join(params)
-        return f"{self.base_url}/query?{query_string}"
+        return f"{self.__base_url}/query?{query_string}"
     
-    def _parse_query_xml(self, xml_content: bytes) -> List[ArxivApiQueryResponse]:
+    def __parse_query_xml(self, xml_content: bytes) -> List[ArxivApiQueryResponse]:
         root = ET.fromstring(xml_content)
-        entries = root.findall('atom:entry', self.namespaces)
+        entries = root.findall('atom:entry', self.__namespaces)
 
         results = []
         for entry in entries:
             result = ArxivApiQueryResponse(
-                id=entry.find('atom:id', self.namespaces).text,
-                updated=entry.find('atom:updated', self.namespaces).text,
-                published=entry.find('atom:published', self.namespaces).text,
-                title=entry.find('atom:title', self.namespaces).text,
-                summary=entry.find('atom:summary', self.namespaces).text.strip(),
-                authors=[author.find('atom:name', self.namespaces).text for author in entry.findall('atom:author', self.namespaces)],
-                link=entry.find('atom:link[@rel="alternate"]', self.namespaces).get('href'),
-                pdf_link=entry.find('atom:link[@title="pdf"]', self.namespaces).get('href'),
-                primary_category=entry.find('arxiv:primary_category', self.namespaces).get('term'),
-                categories=[category.get('term') for category in entry.findall('atom:category', self.namespaces)]
+                id=entry.find('atom:id', self.__namespaces).text,
+                updated=entry.find('atom:updated', self.__namespaces).text,
+                published=entry.find('atom:published', self.__namespaces).text,
+                title=entry.find('atom:title', self.__namespaces).text,
+                summary=entry.find('atom:summary', self.__namespaces).text.strip(),
+                authors=[author.find('atom:name', self.__namespaces).text for author in entry.findall('atom:author', self.__namespaces)],
+                link=entry.find('atom:link[@rel="alternate"]', self.__namespaces).get('href'),
+                pdf_link=entry.find('atom:link[@title="pdf"]', self.__namespaces).get('href'),
+                primary_category=entry.find('arxiv:primary_category', self.__namespaces).get('term'),
+                categories=[category.get('term') for category in entry.findall('atom:category', self.__namespaces)]
             )
             results.append(result)
         return results
     
-    def _rerank_results(self, query: str, documents: List[ArxivApiQueryResponse], top_n: int = 10) -> List[ArxivApiResponse]:
+    def __rerank_results(self, query: str, documents: List[ArxivApiQueryResponse], top_n: int = 10) -> List[ArxivApiResponse]:
         rank_fields = ['summary']
-        rerank_results = self.cohere.rerank(query=query, documents=documents, rank_fields=rank_fields, model='rerank-english-v3.0', top_n=top_n)
+        rerank_results = self.__cohere.rerank(query=query, documents=documents, rank_fields=rank_fields, model='rerank-english-v3.0', top_n=top_n)
         results: List[ArxivApiResponse] = []
         for result in rerank_results.results:
             doc = documents[result.index]
@@ -212,10 +212,10 @@ class ArxivApi:
     
     def query(self, query: str, start: int = 0, max_results: int = 100, top_n: int = 100) -> List[ArxivApiResponse]:
         try:
-            url = self._get_query_url(self._get_search_query(query), start, max_results)
-            response = self.session.get(url=url)
+            url = self.__get_query_url(self.__get_search_query(query), start, max_results)
+            response = self.__session.get(url=url)
             response.raise_for_status()
-            return self._rerank_results(query, self._parse_query_xml(response.content), top_n)
+            return self.__rerank_results(query, self.__parse_query_xml(response.content), top_n)
         except requests.exceptions.RequestException as e:
             print(f"An error occurred: {e}")
             return None
