@@ -1,18 +1,50 @@
+from __future__ import annotations
 import os
-import requests
-import xml.etree.ElementTree as ET
-from typing import Dict, Union, List
-import cohere
-from dotenv import load_dotenv
-import google.generativeai as gemini
-from typing_extensions import TypedDict
 import json
+import requests
+from dotenv import load_dotenv
+import xml.etree.ElementTree as ET
+from typing import TypedDict, List
+import google.generativeai as gemini
+import cohere
 
 load_dotenv()
 
 class SearchQueryGenerationResponse(TypedDict):
     search_query: str
     explanation: str
+
+class ArxivApiQueryResponse(TypedDict):
+    id: str
+    updated: str
+    published: str
+    title: str
+    summary: str
+    authors: List[str]
+    link: str
+    pdf_link: str
+    primary_category: str
+    categories: List[str]
+
+class ArxivApiResponse(ArxivApiQueryResponse):
+    relevance_score: float
+
+    @classmethod
+    def from_query_response(cls, query_response: ArxivApiQueryResponse, relevance_score: float) -> ArxivApiResponse:
+        return cls(
+            id=query_response["id"],
+            updated=query_response["updated"],
+            published=query_response["published"],
+            title=query_response["title"],
+            summary=query_response["summary"],
+            authors=query_response["authors"],
+            link=query_response["link"],
+            pdf_link=query_response["pdf_link"],
+            primary_category=query_response["primary_category"],
+            categories=query_response["categories"],
+            relevance_score=relevance_score
+        )
+
 
 class ArxivApi:
 
@@ -25,6 +57,7 @@ class ArxivApi:
         }
         gemini.configure(api_key=os.environ['GEMINI_API_KEY'])
         self.gemini_model = gemini.GenerativeModel('gemini-1.5-flash')
+        self.cohere = cohere.Client(os.getenv('COHERE_API_KEY'))
     
     def _parse_search_query_response(self, response: str) -> SearchQueryGenerationResponse:
         try:
@@ -145,35 +178,44 @@ class ArxivApi:
         query_string = "&".join(params)
         return f"{self.base_url}/query?{query_string}"
     
-    def _parse_query_xml(self, xml_content: bytes) -> List[Dict]:
+    def _parse_query_xml(self, xml_content: bytes) -> List[ArxivApiQueryResponse]:
         root = ET.fromstring(xml_content)
         entries = root.findall('atom:entry', self.namespaces)
 
         results = []
         for entry in entries:
-            result = {
-                'id': entry.find('atom:id', self.namespaces).text,
-                'updated': entry.find('atom:updated', self.namespaces).text,
-                'published': entry.find('atom:published', self.namespaces).text,
-                'title': entry.find('atom:title', self.namespaces).text,
-                'summary': entry.find('atom:summary', self.namespaces).text.strip(),
-                'authors': [author.find('atom:name', self.namespaces).text for author in entry.findall('atom:author', self.namespaces)],
-                'link': entry.find('atom:link[@rel="alternate"]', self.namespaces).get('href'),
-                'pdf_link': entry.find('atom:link[@title="pdf"]', self.namespaces).get('href'),
-                'primary_category': entry.find('arxiv:primary_category', self.namespaces).get('term'),
-                'categories': [category.get('term') for category in entry.findall('atom:category', self.namespaces)]
-            }
+            result = ArxivApiQueryResponse(
+                id=entry.find('atom:id', self.namespaces).text,
+                updated=entry.find('atom:updated', self.namespaces).text,
+                published=entry.find('atom:published', self.namespaces).text,
+                title=entry.find('atom:title', self.namespaces).text,
+                summary=entry.find('atom:summary', self.namespaces).text.strip(),
+                authors=[author.find('atom:name', self.namespaces).text for author in entry.findall('atom:author', self.namespaces)],
+                link=entry.find('atom:link[@rel="alternate"]', self.namespaces).get('href'),
+                pdf_link=entry.find('atom:link[@title="pdf"]', self.namespaces).get('href'),
+                primary_category=entry.find('arxiv:primary_category', self.namespaces).get('term'),
+                categories=[category.get('term') for category in entry.findall('atom:category', self.namespaces)]
+            )
             results.append(result)
         return results
-
-
     
-    def query(self, query: str, start: int = 0, max_results: int = 10):
+    def _rerank_results(self, query: str, documents: List[ArxivApiQueryResponse], top_n: int = 10) -> List[ArxivApiResponse]:
+        rank_fields = ['summary']
+        rerank_results = self.cohere.rerank(query=query, documents=documents, rank_fields=rank_fields, model='rerank-english-v3.0', top_n=top_n)
+        results: List[ArxivApiResponse] = []
+        for result in rerank_results.results:
+            doc = documents[result.index]
+            results.append(
+                ArxivApiResponse.from_query_response(doc, result.relevance_score)
+            )
+        return results
+    
+    def query(self, query: str, start: int = 0, max_results: int = 100, top_n: int = 100) -> List[ArxivApiResponse]:
         try:
             url = self._get_query_url(self._get_search_query(query), start, max_results)
             response = self.session.get(url=url)
             response.raise_for_status()
-            return self._parse_query_xml(response.content)
+            return self._rerank_results(query, self._parse_query_xml(response.content), top_n)
         except requests.exceptions.RequestException as e:
             print(f"An error occurred: {e}")
             return None
@@ -181,15 +223,6 @@ class ArxivApi:
 
 if __name__ == "__main__":
     api = ArxivApi()
-    query = 'Machine Learning & Cross Encoders'
-    # co = cohere.Client(os.getenv('COHERE_API_KEY'))
-    # rank_fields = ['summary']
-    docs = api.query(query, max_results=100)
-
+    query = 'Retrieval Augmented Generation'
+    docs = api.query(query, max_results=100, top_n=10)
     print(docs)
-    # results = co.rerank(query=query, documents=docs, rank_fields=rank_fields, model='rerank-english-v3.0', top_n=5, )
-    # print(results.results)
-
-    # for hit in results.results:
-    #     doc = docs[hit.index]
-    #     print(doc['title'])
